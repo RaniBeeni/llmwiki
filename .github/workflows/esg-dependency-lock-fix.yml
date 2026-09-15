@@ -19,6 +19,10 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - name: Use npm 11 for audit repair
+        run: |
+          npm install --global npm@11
+          npm --version
       - name: Install exact baseline dependencies
         run: npm ci
       - name: Repair production dependency lock within declared semver ranges
