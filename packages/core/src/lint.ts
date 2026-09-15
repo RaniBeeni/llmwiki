@@ -1,159 +1,36 @@
 import { access, constants } from 'node:fs/promises';
 import { join, resolve, relative, dirname, basename } from 'node:path';
 import { listPages, readPage, writePage, getPageLinks, type WikiPageFrontmatter } from './wiki.js';
-import { readIndex, removeEntry, addEntry, type IndexEntry } from './index-ops.js';
+import { readIndex, removeEntry, addEntry } from './index-ops.js';
 import { API_VERSION } from './constants.js';
 import { isNotFoundError } from './errors.js';
 import { ESG_PAGE_TYPES } from './esg-policy.js';
 import { lintEsgPage } from './esg-lint.js';
 
-export interface LintFinding {
-  severity: 'error' | 'warning' | 'info';
-  category: string;
-  message: string;
-  file?: string;
+export interface LintFinding { severity:'error'|'warning'|'info'; category:string; message:string; file?:string; }
+export interface LintResult { command:string; api_version:string; findings:LintFinding[]; errorCount:number; warningCount:number; infoCount:number; categorySummary:Record<string,number>; }
+async function fileExists(filePath:string):Promise<boolean>{try{await access(filePath,constants.F_OK);return true;}catch(err){if(isNotFoundError(err))return false;throw err;}}
+function normalizePath(p:string):string{return p.replace(/\\/g,'/');}
+function isEsgShadowPage(fm:WikiPageFrontmatter):boolean{return fm.status==='shadow'||fm.review_state!==undefined||fm.authority_scope!==undefined||fm.source_refs!==undefined||fm.requirement_ids!==undefined||fm.access_classification!==undefined;}
+
+export async function lintWiki(targetPath:string,categories?:string[]):Promise<LintResult>{
+  const root=resolve(targetPath),wikiDir=join(root,'wiki'),indexPath=join(wikiDir,'index.md');const findings:LintFinding[]=[];const shouldRun=(cat:string)=>!categories||categories.length===0||categories.includes(cat);
+  const allPages=await listPages(wikiDir);const wikiPages=allPages.filter(p=>{const rel=normalizePath(relative(wikiDir,p));return rel!=='index.md'&&rel!=='log.md';});
+  const existingPagePaths=new Set(wikiPages.map(p=>normalizePath(relative(wikiDir,p))));const pageContents=new Map<string,string>();const pageFrontmatter=new Map<string,WikiPageFrontmatter>();const pageLinks=new Map<string,string[]>();const inboundLinks=new Set<string>();
+  for(const pagePath of wikiPages){try{const page=await readPage(pagePath);pageContents.set(pagePath,page.body);pageFrontmatter.set(pagePath,page.frontmatter);const links=getPageLinks(page.body);const resolvedLinks:string[]=[];for(const link of links){const rel=normalizePath(relative(wikiDir,resolve(dirname(pagePath),link)));resolvedLinks.push(rel);inboundLinks.add(rel);}pageLinks.set(pagePath,resolvedLinks);}catch(err){if(!isNotFoundError(err))throw err;}}
+  const indexEntries=await readIndex(indexPath);const indexedPaths=new Set(indexEntries.map(e=>normalizePath(e.path)));
+  if(shouldRun('broken-links'))for(const[pagePath,links]of pageLinks){const pageRel=normalizePath(relative(wikiDir,pagePath));for(const linkRel of links)if(!existingPagePaths.has(linkRel))findings.push({severity:'error',category:'broken-links',message:`Broken link to "${linkRel}" in page "${pageRel}"`,file:pageRel});}
+  if(shouldRun('orphan-pages'))for(const pageRel of existingPagePaths)if(!inboundLinks.has(pageRel)&&!indexedPaths.has(pageRel))findings.push({severity:'warning',category:'orphan-pages',message:`Orphan page "${pageRel}" — not linked and not indexed`,file:pageRel});
+  if(shouldRun('index-completeness'))for(const pageRel of existingPagePaths)if(!indexedPaths.has(pageRel))findings.push({severity:'warning',category:'index-completeness',message:`Page "${pageRel}" is not listed in index.md`,file:pageRel});
+  if(shouldRun('stale-entries'))for(const entry of indexEntries){const entryPath=normalizePath(entry.path);if(!(await fileExists(join(wikiDir,entryPath))))findings.push({severity:'error',category:'stale-entries',message:`Stale index entry "${entry.title}" points to missing file "${entryPath}"`,file:entryPath});}
+  if(shouldRun('missing-pages')){const missingSet=new Set<string>();for(const[,links]of pageLinks)for(const linkRel of links)if(!existingPagePaths.has(linkRel)&&!missingSet.has(linkRel)){missingSet.add(linkRel);findings.push({severity:'info',category:'missing-pages',message:`Referenced page "${linkRel}" does not exist`,file:linkRel});}}
+  if(shouldRun('frontmatter-validation')){const validTypes=[...ESG_PAGE_TYPES];for(const pagePath of wikiPages){const pageRel=normalizePath(relative(wikiDir,pagePath));const fm=pageFrontmatter.get(pagePath);if(!fm)continue;if(!fm.type)findings.push({severity:'error',category:'frontmatter-validation',message:`Missing required "type" field in frontmatter of "${pageRel}"`,file:pageRel});else if(!validTypes.includes(fm.type))findings.push({severity:'warning',category:'frontmatter-validation',message:`Invalid type "${fm.type}" in "${pageRel}" — expected one of: ${validTypes.join(', ')}`,file:pageRel});if(!fm.title)findings.push({severity:'error',category:'frontmatter-validation',message:`Missing required "title" field in frontmatter of "${pageRel}"`,file:pageRel});if(!fm.tags)findings.push({severity:'info',category:'frontmatter-validation',message:`Missing recommended "tags" field in "${pageRel}"`,file:pageRel});if(!fm.created)findings.push({severity:'info',category:'frontmatter-validation',message:`Missing recommended "created" field in "${pageRel}"`,file:pageRel});}}
+  for(const pagePath of wikiPages){const pageRel=normalizePath(relative(wikiDir,pagePath));const fm=pageFrontmatter.get(pagePath),body=pageContents.get(pagePath);if(!fm||body===undefined||!isEsgShadowPage(fm))continue;for(const finding of lintEsgPage({frontmatter:fm,body})){if(!shouldRun(finding.category))continue;findings.push({...finding,file:pageRel});}}
+  const errorCount=findings.filter(f=>f.severity==='error').length,warningCount=findings.filter(f=>f.severity==='warning').length,infoCount=findings.filter(f=>f.severity==='info').length;const categorySummary:Record<string,number>={};for(const f of findings)categorySummary[f.category]=(categorySummary[f.category]??0)+1;return{command:'lint',api_version:API_VERSION,findings,errorCount,warningCount,infoCount,categorySummary};
 }
 
-export interface LintResult {
-  command: string;
-  api_version: string;
-  findings: LintFinding[];
-  errorCount: number;
-  warningCount: number;
-  infoCount: number;
-  categorySummary: Record<string, number>;
-}
-
-async function fileExists(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath, constants.F_OK);
-    return true;
-  } catch (err) {
-    if (isNotFoundError(err)) return false;
-    throw err;
-  }
-}
-
-function normalizePath(p: string): string {
-  return p.replace(/\\/g, '/');
-}
-
-export async function lintWiki(
-  targetPath: string,
-  categories?: string[],
-): Promise<LintResult> {
-  const root = resolve(targetPath);
-  const wikiDir = join(root, 'wiki');
-  const indexPath = join(wikiDir, 'index.md');
-  const findings: LintFinding[] = [];
-  const shouldRun = (cat: string): boolean => !categories || categories.length === 0 || categories.includes(cat);
-
-  const allPages = await listPages(wikiDir);
-  const wikiPages = allPages.filter((p) => {
-    const rel = normalizePath(relative(wikiDir, p));
-    return rel !== 'index.md' && rel !== 'log.md';
-  });
-  const existingPagePaths = new Set(wikiPages.map((p) => normalizePath(relative(wikiDir, p))));
-  const pageContents = new Map<string, string>();
-  const pageFrontmatter = new Map<string, WikiPageFrontmatter>();
-  const pageLinks = new Map<string, string[]>();
-  const inboundLinks = new Set<string>();
-
-  for (const pagePath of wikiPages) {
-    try {
-      const page = await readPage(pagePath);
-      pageContents.set(pagePath, page.body);
-      pageFrontmatter.set(pagePath, page.frontmatter);
-      const links = getPageLinks(page.body);
-      const resolvedLinks: string[] = [];
-      for (const link of links) {
-        const resolved = resolve(dirname(pagePath), link);
-        const rel = normalizePath(relative(wikiDir, resolved));
-        resolvedLinks.push(rel);
-        inboundLinks.add(rel);
-      }
-      pageLinks.set(pagePath, resolvedLinks);
-    } catch (err) {
-      if (!isNotFoundError(err)) throw err;
-    }
-  }
-
-  const indexEntries = await readIndex(indexPath);
-  const indexedPaths = new Set(indexEntries.map((e) => normalizePath(e.path)));
-
-  if (shouldRun('broken-links')) {
-    for (const [pagePath, links] of pageLinks) {
-      const pageRel = normalizePath(relative(wikiDir, pagePath));
-      for (const linkRel of links) {
-        if (!existingPagePaths.has(linkRel)) findings.push({ severity:'error', category:'broken-links', message:`Broken link to "${linkRel}" in page "${pageRel}"`, file:pageRel });
-      }
-    }
-  }
-  if (shouldRun('orphan-pages')) {
-    for (const pageRel of existingPagePaths) if (!inboundLinks.has(pageRel) && !indexedPaths.has(pageRel)) findings.push({ severity:'warning', category:'orphan-pages', message:`Orphan page "${pageRel}" — not linked and not indexed`, file:pageRel });
-  }
-  if (shouldRun('index-completeness')) {
-    for (const pageRel of existingPagePaths) if (!indexedPaths.has(pageRel)) findings.push({ severity:'warning', category:'index-completeness', message:`Page "${pageRel}" is not listed in index.md`, file:pageRel });
-  }
-  if (shouldRun('stale-entries')) {
-    for (const entry of indexEntries) {
-      const entryPath = normalizePath(entry.path);
-      if (!(await fileExists(join(wikiDir, entryPath)))) findings.push({ severity:'error', category:'stale-entries', message:`Stale index entry "${entry.title}" points to missing file "${entryPath}"`, file:entryPath });
-    }
-  }
-  if (shouldRun('missing-pages')) {
-    const missingSet = new Set<string>();
-    for (const [, links] of pageLinks) for (const linkRel of links) if (!existingPagePaths.has(linkRel) && !missingSet.has(linkRel)) {
-      missingSet.add(linkRel); findings.push({ severity:'info', category:'missing-pages', message:`Referenced page "${linkRel}" does not exist`, file:linkRel });
-    }
-  }
-
-  if (shouldRun('frontmatter-validation')) {
-    const validTypes = [...ESG_PAGE_TYPES];
-    for (const pagePath of wikiPages) {
-      const pageRel = normalizePath(relative(wikiDir, pagePath));
-      const fm = pageFrontmatter.get(pagePath); if (!fm) continue;
-      if (!fm.type) findings.push({ severity:'error', category:'frontmatter-validation', message:`Missing required "type" field in frontmatter of "${pageRel}"`, file:pageRel });
-      else if (!validTypes.includes(fm.type)) findings.push({ severity:'warning', category:'frontmatter-validation', message:`Invalid type "${fm.type}" in "${pageRel}" — expected one of: ${validTypes.join(', ')}`, file:pageRel });
-      if (!fm.title) findings.push({ severity:'error', category:'frontmatter-validation', message:`Missing required "title" field in frontmatter of "${pageRel}"`, file:pageRel });
-      if (!fm.tags) findings.push({ severity:'info', category:'frontmatter-validation', message:`Missing recommended "tags" field in "${pageRel}"`, file:pageRel });
-      if (!fm.created) findings.push({ severity:'info', category:'frontmatter-validation', message:`Missing recommended "created" field in "${pageRel}"`, file:pageRel });
-    }
-  }
-
-  for (const pagePath of wikiPages) {
-    const pageRel = normalizePath(relative(wikiDir, pagePath));
-    const fm = pageFrontmatter.get(pagePath); const body = pageContents.get(pagePath);
-    if (!fm || body === undefined) continue;
-    for (const finding of lintEsgPage({ frontmatter: fm, body })) {
-      if (!shouldRun(finding.category)) continue;
-      findings.push({ ...finding, file: pageRel });
-    }
-  }
-
-  const errorCount = findings.filter((f) => f.severity === 'error').length;
-  const warningCount = findings.filter((f) => f.severity === 'warning').length;
-  const infoCount = findings.filter((f) => f.severity === 'info').length;
-  const categorySummary: Record<string, number> = {};
-  for (const f of findings) categorySummary[f.category] = (categorySummary[f.category] ?? 0) + 1;
-  return { command:'lint', api_version:API_VERSION, findings, errorCount, warningCount, infoCount, categorySummary };
-}
-
-export interface LintFixOptions { fixOrphans?: boolean; }
-export interface LintFixResult { command:string; api_version:string; fixed:LintFinding[]; remaining:LintFinding[]; fixedCount:number; }
-const FIXABLE_CATEGORIES = new Set(['stale-entries','index-completeness','frontmatter-validation']);
-function titleFromPath(relPath:string):string { const stem=basename(relPath,'.md'); return stem.replace(/[-_]/g,' ').replace(/\b\w/g,(c)=>c.toUpperCase()); }
-function categoryFromPath(relPath:string):string { const dir=dirname(relPath); if(dir==='.')return 'Uncategorized'; const first=dir.split('/')[0]; return first.charAt(0).toUpperCase()+first.slice(1); }
-
-export async function lintFix(targetPath:string, options:LintFixOptions={}):Promise<LintFixResult> {
-  const root=resolve(targetPath); const wikiDir=join(root,'wiki'); const indexPath=join(wikiDir,'index.md'); const lintResult=await lintWiki(targetPath);
-  const fixed:LintFinding[]=[]; const remaining:LintFinding[]=[]; const fixableFindings:LintFinding[]=[];
-  for(const finding of lintResult.findings){ if(FIXABLE_CATEGORIES.has(finding.category))fixableFindings.push(finding); else if(finding.category==='orphan-pages'&&options.fixOrphans)fixableFindings.push(finding); else remaining.push(finding); }
-  for(const finding of fixableFindings.filter(f=>f.category==='stale-entries')){ if(!finding.file){remaining.push(finding);continue;} try{await removeEntry(indexPath,finding.file);fixed.push(finding);}catch{remaining.push(finding);} }
-  for(const finding of fixableFindings.filter(f=>f.category==='index-completeness')){ if(!finding.file){remaining.push(finding);continue;} const relPath=finding.file; try{const page=await readPage(join(wikiDir,relPath)); await addEntry(indexPath,{path:relPath,title:page.frontmatter.title||titleFromPath(relPath),summary:'',category:categoryFromPath(relPath),tags:page.frontmatter.tags||[]}); fixed.push(finding);}catch{remaining.push(finding);} }
-  const fmFindings=fixableFindings.filter(f=>f.category==='frontmatter-validation'); const fmByFile=new Map<string,LintFinding[]>();
-  for(const finding of fmFindings){ if(!finding.file){remaining.push(finding);continue;} if(!fmByFile.has(finding.file))fmByFile.set(finding.file,[]); fmByFile.get(finding.file)!.push(finding); }
-  for(const [relPath,findings] of fmByFile){ try{const page=await readPage(join(wikiDir,relPath));let modified=false;const fixedInPage:LintFinding[]=[];const remainingInPage:LintFinding[]=[];for(const finding of findings){const msg=finding.message;if(msg.includes('Missing required "type"')){page.frontmatter.type='entity';modified=true;fixedInPage.push(finding);}else if(msg.includes('Missing required "title"')){page.frontmatter.title=titleFromPath(relPath);modified=true;fixedInPage.push(finding);}else if(msg.includes('Missing recommended "tags"')){page.frontmatter.tags=[];modified=true;fixedInPage.push(finding);}else if(msg.includes('Missing recommended "created"')){page.frontmatter.created=new Date().toISOString().split('T')[0];modified=true;fixedInPage.push(finding);}else remainingInPage.push(finding);}if(modified)await writePage(join(wikiDir,relPath),page);fixed.push(...fixedInPage);remaining.push(...remainingInPage);}catch{remaining.push(...findings);} }
-  if(options.fixOrphans){for(const finding of fixableFindings.filter(f=>f.category==='orphan-pages')){if(!finding.file){remaining.push(finding);continue;}const relPath=finding.file;try{const page=await readPage(join(wikiDir,relPath));await addEntry(indexPath,{path:relPath,title:page.frontmatter.title||titleFromPath(relPath),summary:'',category:categoryFromPath(relPath),tags:page.frontmatter.tags||[]});fixed.push(finding);}catch{remaining.push(finding);}}}
-  return {command:'lint-fix',api_version:API_VERSION,fixed,remaining,fixedCount:fixed.length};
-}
+export interface LintFixOptions{fixOrphans?:boolean;} export interface LintFixResult{command:string;api_version:string;fixed:LintFinding[];remaining:LintFinding[];fixedCount:number;}
+const FIXABLE_CATEGORIES=new Set(['stale-entries','index-completeness','frontmatter-validation']);
+function titleFromPath(relPath:string):string{const stem=basename(relPath,'.md');return stem.replace(/[-_]/g,' ').replace(/\b\w/g,c=>c.toUpperCase());}
+function categoryFromPath(relPath:string):string{const dir=dirname(relPath);if(dir==='.')return'Uncategorized';const first=dir.split('/')[0];return first.charAt(0).toUpperCase()+first.slice(1);}
+export async function lintFix(targetPath:string,options:LintFixOptions={}):Promise<LintFixResult>{const root=resolve(targetPath),wikiDir=join(root,'wiki'),indexPath=join(wikiDir,'index.md'),lintResult=await lintWiki(targetPath);const fixed:LintFinding[]=[],remaining:LintFinding[]=[],fixableFindings:LintFinding[]=[];for(const finding of lintResult.findings){if(FIXABLE_CATEGORIES.has(finding.category))fixableFindings.push(finding);else if(finding.category==='orphan-pages'&&options.fixOrphans)fixableFindings.push(finding);else remaining.push(finding);}for(const finding of fixableFindings.filter(f=>f.category==='stale-entries')){if(!finding.file){remaining.push(finding);continue;}try{await removeEntry(indexPath,finding.file);fixed.push(finding);}catch{remaining.push(finding);}}for(const finding of fixableFindings.filter(f=>f.category==='index-completeness')){if(!finding.file){remaining.push(finding);continue;}const relPath=finding.file;try{const page=await readPage(join(wikiDir,relPath));await addEntry(indexPath,{path:relPath,title:page.frontmatter.title||titleFromPath(relPath),summary:'',category:categoryFromPath(relPath),tags:page.frontmatter.tags||[]});fixed.push(finding);}catch{remaining.push(finding);}}const fmFindings=fixableFindings.filter(f=>f.category==='frontmatter-validation'),fmByFile=new Map<string,LintFinding[]>();for(const finding of fmFindings){if(!finding.file){remaining.push(finding);continue;}if(!fmByFile.has(finding.file))fmByFile.set(finding.file,[]);fmByFile.get(finding.file)!.push(finding);}for(const[relPath,fs]of fmByFile){try{const page=await readPage(join(wikiDir,relPath));let modified=false;const fixedInPage:LintFinding[]=[],remainingInPage:LintFinding[]=[];for(const finding of fs){const msg=finding.message;if(msg.includes('Missing required "type"')){page.frontmatter.type='entity';modified=true;fixedInPage.push(finding);}else if(msg.includes('Missing required "title"')){page.frontmatter.title=titleFromPath(relPath);modified=true;fixedInPage.push(finding);}else if(msg.includes('Missing recommended "tags"')){page.frontmatter.tags=[];modified=true;fixedInPage.push(finding);}else if(msg.includes('Missing recommended "created"')){page.frontmatter.created=new Date().toISOString().split('T')[0];modified=true;fixedInPage.push(finding);}else remainingInPage.push(finding);}if(modified)await writePage(join(wikiDir,relPath),page);fixed.push(...fixedInPage);remaining.push(...remainingInPage);}catch{remaining.push(...fs);}}if(options.fixOrphans)for(const finding of fixableFindings.filter(f=>f.category==='orphan-pages')){if(!finding.file){remaining.push(finding);continue;}const relPath=finding.file;try{const page=await readPage(join(wikiDir,relPath));await addEntry(indexPath,{path:relPath,title:page.frontmatter.title||titleFromPath(relPath),summary:'',category:categoryFromPath(relPath),tags:page.frontmatter.tags||[]});fixed.push(finding);}catch{remaining.push(finding);}}return{command:'lint-fix',api_version:API_VERSION,fixed,remaining,fixedCount:fixed.length};}
