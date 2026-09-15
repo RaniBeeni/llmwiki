@@ -19,14 +19,12 @@ jobs:
         with:
           node-version: 20
           cache: npm
-      - name: Use npm 11 for audit repair
-        run: |
-          npm install --global npm@11
-          npm --version
       - name: Install exact baseline dependencies
         run: npm ci
-      - name: Repair production dependency lock within declared semver ranges
-        run: npm audit fix --package-lock-only
+      - name: Update only vulnerable transitive packages within existing semver ranges
+        run: >-
+          npm update @xmldom/xmldom fast-uri hono js-yaml qs
+          --package-lock-only --workspaces --include-workspace-root
       - name: Verify production dependency gate
         run: npm audit --omit=dev --audit-level=high
       - name: Commit repaired lockfile if changed
