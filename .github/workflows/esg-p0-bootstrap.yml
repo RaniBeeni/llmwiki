@@ -1,0 +1,91 @@
+name: ESG P0 Shadow Bootstrap
+
+on:
+  push:
+    branches: [esg-p0-shadow]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bootstrap-and-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Verify baseline ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor b44df6ae95138d0edcbcc79b5b1d099c78bce5e0 HEAD
+
+      - name: Apply validated ESG v0.3 patch when needed
+        id: patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          if test -f packages/core/src/esg-policy.ts; then
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+            echo "ESG v0.3 already present; skipping bootstrap apply."
+            exit 0
+          fi
+          test -f .esg/esg-p0-v0.3.patch.gz.b64
+          base64 -d .esg/esg-p0-v0.3.patch.gz.b64 | gzip -dc > /tmp/esg-p0-v0.3.patch
+          echo "8052520355f992e31cd99ab3ea359746ef1801ec5f9124148181a560755f7750  /tmp/esg-p0-v0.3.patch" | sha256sum -c -
+          git apply --check /tmp/esg-p0-v0.3.patch
+          git apply /tmp/esg-p0-v0.3.patch
+          echo "applied=true" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build core
+        run: npm run build --workspace=packages/core
+
+      - name: Build VS Code extension
+        run: npm run build --workspace=packages/vscode
+
+      - name: Lint core
+        run: npm run lint --workspace=packages/core
+
+      - name: Lint VS Code extension
+        run: npm run lint --workspace=packages/vscode
+
+      - name: Run upstream plus ESG coverage
+        run: npm run coverage
+
+      - name: Assert ESG P0 non-destructive controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f packages/core/src/esg-policy.ts
+          test -f packages/core/src/esg-shadow.ts
+          test -f packages/core/src/esg-source-manifest.ts
+          test -f tests/shared/esg-p0.test.ts
+          ! grep -q "WRITE_TOOLS" packages/core/src/mcp/server.ts
+          ! grep -q "await unlink(filePath)" packages/vscode/src/commands.ts
+          ! grep -q "await deletePage" packages/vscode/src/commands.ts
+          ! grep -q "await deletePage" packages/vscode/src/chatParticipant.ts
+          grep -q "Remove Source is disabled" packages/vscode/src/commands.ts
+          grep -q "destructive .*fix.* is disabled" packages/vscode/src/chatParticipant.ts
+
+      - name: Commit generated ESG v0.3 code
+        if: steps.patch.outputs.applied == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .esg ESG_BOOTSTRAP.md
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: add ESG Shadow Knowledge P0 v0.3"
+          git push origin HEAD:esg-p0-shadow
