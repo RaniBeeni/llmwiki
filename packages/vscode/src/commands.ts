@@ -154,8 +154,9 @@ export function registerCommands(
 
   reg('llmwiki.refresh',async()=>{
     if(!(await directoryExists(wikiDir))){providers.entities.refresh();providers.concepts.refresh();providers.rawSources.refresh();return;}
-    const health=await lintWiki(workspaceFolder);providers.entities.refresh();providers.concepts.refresh();providers.rawSources.refresh();
-    if(health.errorCount===0&&health.warningCount===0)vscode.window.showInformationMessage('Wiki refreshed — read-only health check passed ✓');
+    const health=await lintWiki(workspaceFolder);
+    providers.entities.refresh();providers.concepts.refresh();providers.rawSources.refresh();
+    if(!health || (health.errorCount===0&&health.warningCount===0))vscode.window.showInformationMessage('Wiki refreshed — no issues found (read-only health check) ✓');
     else vscode.window.showWarningMessage(`Wiki refreshed — read-only health check found ${health.errorCount} error(s), ${health.warningCount} warning(s). Use @wiki /lint for details.`);
   });
 
