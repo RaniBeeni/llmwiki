@@ -22,28 +22,86 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Verify baseline ancestry
+      - name: Verify Microsoft baseline ancestry
         shell: bash
         run: |
           set -euo pipefail
           git merge-base --is-ancestor b44df6ae95138d0edcbcc79b5b1d099c78bce5e0 HEAD
 
-      - name: Apply validated ESG v0.3 patch when needed
+      - name: Deterministically apply validated ESG v0.3 patch
         id: patch
         shell: bash
         run: |
           set -euo pipefail
-          if test -f packages/core/src/esg-policy.ts; then
+          if ! test -f .esg/esg-p0-v0.3.patch.gz.b64; then
             echo "applied=false" >> "$GITHUB_OUTPUT"
-            echo "ESG v0.3 already present; skipping bootstrap apply."
+            echo "Bootstrap payload already removed; validating committed v0.3 tree."
             exit 0
           fi
-          test -f .esg/esg-p0-v0.3.patch.gz.b64
+
           base64 -d .esg/esg-p0-v0.3.patch.gz.b64 | gzip -dc > /tmp/esg-p0-v0.3.patch
           echo "8052520355f992e31cd99ab3ea359746ef1801ec5f9124148181a560755f7750  /tmp/esg-p0-v0.3.patch" | sha256sum -c -
+
+          # Reset only the files owned by the ESG v0.3 patch to the exact Microsoft baseline.
+          git checkout b44df6ae95138d0edcbcc79b5b1d099c78bce5e0 -- \
+            packages/core/src/index.ts \
+            packages/core/src/init.ts \
+            packages/core/src/ingest.ts \
+            packages/core/src/wiki.ts \
+            packages/core/src/query.ts \
+            packages/core/src/lint.ts \
+            packages/core/src/mcp/server.ts \
+            packages/vscode/src/extractText.ts \
+            packages/vscode/src/llmIngest.ts \
+            packages/vscode/src/commands.ts \
+            packages/vscode/src/chatParticipant.ts
+
+          rm -f \
+            packages/core/src/esg-policy.ts \
+            packages/core/src/esg-chunk.ts \
+            packages/core/src/esg-shadow.ts \
+            packages/core/src/esg-source-manifest.ts \
+            packages/core/src/esg-lint.ts \
+            packages/core/src/esg-query.ts \
+            packages/vscode/src/esgChunkedAnalysis.ts \
+            tests/shared/esg-p0.test.ts
+
           git apply --check /tmp/esg-p0-v0.3.patch
           git apply /tmp/esg-p0-v0.3.patch
           echo "applied=true" >> "$GITHUB_OUTPUT"
+
+      - name: Verify exact v0.3 Git blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          check_hash() {
+            local path="$1" expected="$2" actual
+            actual="$(git hash-object "$path")"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error file=$path::Git blob mismatch: expected $expected, got $actual"
+              exit 1
+            fi
+            echo "OK $path $actual"
+          }
+          check_hash packages/core/src/esg-chunk.ts 12565e1dd8ff01f5318ac22db4bc48abb80063bf
+          check_hash packages/core/src/esg-lint.ts be8c3a2665a9a4cee8a79a5d8f7148e630e0790f
+          check_hash packages/core/src/esg-policy.ts 10cfe28f0bbeebf53f3a02a2a3b76954ba909493
+          check_hash packages/core/src/esg-query.ts dac9d7a852a0f95a442b18e16d9db7872d7024cf
+          check_hash packages/core/src/esg-shadow.ts 7e2e0e56f2f99ed0946faca73222ae216809ee04
+          check_hash packages/core/src/esg-source-manifest.ts 1527b1c9386260227687aede0a00a466bbfa5446
+          check_hash packages/core/src/index.ts 757290c42dcb8c4191f675ba52c954e4f562192a
+          check_hash packages/core/src/ingest.ts 03f7f6e31a908655edfd31b778ce54bee92f0368
+          check_hash packages/core/src/init.ts f24aa1a8cce0225f2a5ab84327d2821a210c28f1
+          check_hash packages/core/src/lint.ts a4ec8b0a26605026cfa8b1629e570335e8ad6245
+          check_hash packages/core/src/mcp/server.ts cc16ac7262fb81456a4cd860611649076190323f
+          check_hash packages/core/src/query.ts f6866414bfbc97d2f0f3568bcf02d6777c453e70
+          check_hash packages/core/src/wiki.ts 99e333b56b384889397ff5e0e8201ff6c40d579c
+          check_hash packages/vscode/src/chatParticipant.ts 69d54bb8195537715c673e50bc7da1bf8aecca98
+          check_hash packages/vscode/src/commands.ts c90ab3c80e54bbdc67001e757098cb18ae937b75
+          check_hash packages/vscode/src/esgChunkedAnalysis.ts 117b28492f34ae8c03a3b8536ce08c104189dbb9
+          check_hash packages/vscode/src/extractText.ts f8399849753f65b5196c133f73b83d1ff8e32dd7
+          check_hash packages/vscode/src/llmIngest.ts 3de357d393c7de59b49f157bf72c733904cdb0c4
+          check_hash tests/shared/esg-p0.test.ts 9cfe667db8c2d4d2a2d12eaac214cc4c84961423
 
       - name: Install dependencies
         run: npm ci
@@ -67,18 +125,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f packages/core/src/esg-policy.ts
-          test -f packages/core/src/esg-shadow.ts
-          test -f packages/core/src/esg-source-manifest.ts
-          test -f tests/shared/esg-p0.test.ts
-          ! grep -q "WRITE_TOOLS" packages/core/src/mcp/server.ts
-          ! grep -q "await unlink(filePath)" packages/vscode/src/commands.ts
-          ! grep -q "await deletePage" packages/vscode/src/commands.ts
-          ! grep -q "await deletePage" packages/vscode/src/chatParticipant.ts
-          grep -q "Remove Source is disabled" packages/vscode/src/commands.ts
-          grep -q "destructive .*fix.* is disabled" packages/vscode/src/chatParticipant.ts
+          absent() {
+            local file="$1" pattern="$2"
+            if grep -Fq "$pattern" "$file"; then
+              echo "::error file=$file::Forbidden destructive marker found: $pattern"
+              grep -Fn "$pattern" "$file" || true
+              exit 1
+            fi
+          }
+          present() {
+            local file="$1" pattern="$2"
+            if ! grep -Fq "$pattern" "$file"; then
+              echo "::error file=$file::Required safety marker missing: $pattern"
+              exit 1
+            fi
+          }
+          absent packages/core/src/mcp/server.ts "WRITE_TOOLS"
+          absent packages/vscode/src/commands.ts "await unlink(filePath)"
+          absent packages/vscode/src/commands.ts "await deletePage"
+          absent packages/vscode/src/chatParticipant.ts "await deletePage"
+          present packages/vscode/src/commands.ts "Remove Source is disabled"
+          present packages/vscode/src/chatParticipant.ts 'destructive `/fix` is disabled'
 
-      - name: Commit generated ESG v0.3 code
+      - name: Commit validated ESG v0.3 code
         if: steps.patch.outputs.applied == 'true'
         shell: bash
         run: |
@@ -87,5 +156,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "feat: add ESG Shadow Knowledge P0 v0.3"
+          git commit -m "feat: add validated ESG Shadow Knowledge P0 v0.3"
           git push origin HEAD:esg-p0-shadow
