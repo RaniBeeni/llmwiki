@@ -5,12 +5,10 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { READ_TOOLS, handleReadToolCall } from './read-tools.js';
 import type { ToolArgs } from './read-tools.js';
-import { WRITE_TOOLS, handleWriteToolCall } from './write-tools.js';
 import { registerResources } from './resources.js';
 import { registerPrompts } from './prompts.js';
 
 const READ_TOOL_NAMES = new Set(READ_TOOLS.map((t) => t.name));
-const WRITE_TOOL_NAMES = new Set(WRITE_TOOLS.map((t) => t.name));
 
 /**
  * Create a fully-configured MCP server for LLM Wiki.
@@ -28,22 +26,19 @@ export function createMcpServer(wikiRoot: string): Server {
     { capabilities: { tools: {}, resources: {}, prompts: {} } },
   );
 
-  // Unified tool listing: read + write tools
+  // ESG Shadow Pilot: expose read tools only.
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [...READ_TOOLS, ...WRITE_TOOLS],
+    tools: [...READ_TOOLS],
   }));
 
-  // Unified call dispatch: route to the correct handler
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     try {
       let text: string;
       if (READ_TOOL_NAMES.has(name)) {
         text = await handleReadToolCall(name, (args ?? {}) as ToolArgs, wikiRoot);
-      } else if (WRITE_TOOL_NAMES.has(name)) {
-        text = await handleWriteToolCall(name, (args ?? {}) as ToolArgs, wikiRoot);
       } else {
-        throw new Error(`Unknown tool: ${name}`);
+        throw new Error(`ESG Shadow Pilot MCP is read-only; unknown/disabled tool: ${name}`);
       }
       return { content: [{ type: 'text' as const, text }] };
     } catch (err: unknown) {
@@ -55,11 +50,7 @@ export function createMcpServer(wikiRoot: string): Server {
     }
   });
 
-  // Resource handlers (browsable wiki content)
   registerResources(server, wikiRoot);
-
-  // Prompt templates (reusable agent workflows)
   registerPrompts(server, wikiRoot);
-
   return server;
 }
