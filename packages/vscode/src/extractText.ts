@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 /**
  * Extract text content from a file based on its extension.
  * Supports: .md, .txt, .json, .csv, .xml, .html (read as-is),
- *           .pdf (via pdf-parse), .docx (via mammoth).
+ *           .pdf (via pdfjs), .docx (via mammoth).
  */
 export async function extractText(filePath: string): Promise<string> {
   const ext = extname(filePath).toLowerCase();
@@ -16,14 +16,12 @@ export async function extractText(filePath: string): Promise<string> {
     case '.docx':
       return extractDocx(filePath);
     default:
-      // All other files: read as UTF-8 text
       return readFile(filePath, 'utf-8');
   }
 }
 
 async function extractPdf(filePath: string): Promise<string> {
   const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.mjs');
-  // Point worker to the bundled worker file using a file:// URL
   const workerPath = require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs');
   pdfjsLib.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href;
 
@@ -40,7 +38,7 @@ async function extractPdf(filePath: string): Promise<string> {
         typeof item === 'object' && item !== null && 'str' in item)
       .map((item: { str: string }) => item.str)
       .join(' ');
-    pages.push(text);
+    pages.push(`[PAGE:${i}]\n${text}`);
   }
 
   return pages.join('\n\n');
