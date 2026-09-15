@@ -21,6 +21,8 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
+      - name: Production dependency security gate
+        run: npm audit --omit=dev --audit-level=high
       - name: Build core
         run: npm run build --workspace=packages/core
       - name: Build VS Code extension
@@ -51,3 +53,12 @@ jobs:
           ! grep -q "await deletePage" packages/vscode/src/chatParticipant.ts
           grep -q "Remove Source is disabled" packages/vscode/src/commands.ts
           grep -q "destructive .*fix.* is disabled" packages/vscode/src/chatParticipant.ts
+      - name: Package VSIX
+        run: npm run package --workspace=packages/vscode
+      - name: Upload ESG pilot VSIX
+        uses: actions/upload-artifact@v4
+        with:
+          name: llmwiki-esg-p0-shadow-vsix
+          path: packages/vscode/*.vsix
+          if-no-files-found: error
+          retention-days: 14
