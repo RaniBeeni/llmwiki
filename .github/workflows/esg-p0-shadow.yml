@@ -1,0 +1,47 @@
+name: ESG P0 Shadow Validation
+
+on:
+  push:
+    branches: [esg-p0-shadow]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Build core
+        run: npm run build --workspace=packages/core
+      - name: Build VS Code extension
+        run: npm run build --workspace=packages/vscode
+      - name: Lint core
+        run: npm run lint --workspace=packages/core
+      - name: Lint VS Code extension
+        run: npm run lint --workspace=packages/vscode
+      - name: Run upstream + ESG regression coverage
+        run: npm run coverage
+      - name: Assert ESG P0 non-destructive controls
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f packages/core/src/esg-policy.ts
+          test -f packages/core/src/esg-shadow.ts
+          test -f packages/core/src/esg-source-manifest.ts
+          test -f tests/shared/esg-p0.test.ts
+          ! grep -q "WRITE_TOOLS" packages/core/src/mcp/server.ts
+          ! grep -q "await unlink(filePath)" packages/vscode/src/commands.ts
+          ! grep -q "await deletePage" packages/vscode/src/commands.ts
+          ! grep -q "await deletePage" packages/vscode/src/chatParticipant.ts
+          grep -q "Remove Source is disabled" packages/vscode/src/commands.ts
+          grep -q "destructive .*fix.* is disabled" packages/vscode/src/chatParticipant.ts
