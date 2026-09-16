@@ -1,0 +1,33 @@
+name: ESG Cloud P0
+
+on:
+  push:
+    branches: [esg-cloud-p0]
+  pull_request:
+    paths:
+      - "apps/esg-cloud/**"
+      - ".github/workflows/esg-cloud-p0.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/esg-cloud
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/esg-cloud/package.json
+      - name: Install
+        run: npm install --no-audit
+      - name: Production dependency security gate
+        run: npm audit --omit=dev --audit-level=high
+      - name: Build
+        run: npm run build
