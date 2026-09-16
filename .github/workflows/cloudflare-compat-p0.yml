@@ -58,13 +58,12 @@ jobs:
         run: |
           curl -fsS http://127.0.0.1:8787/probe/neon-driver | tee /tmp/neon.json
           node -e "const x=require('/tmp/neon.json'); if(!x.ok) process.exit(1);"
-      - name: Runtime smoke - local Workflow binding
+      - name: Runtime smoke - local Workflow lifecycle via official CLI
         run: |
-          curl -fsS http://127.0.0.1:8787/probe/workflow | tee /tmp/workflow-start.json
-          ID=$(node -p "require('/tmp/workflow-start.json').instanceId")
+          npx wrangler workflows trigger llmwiki-compat-workflow '{"sourceId":"KSSB-S2-2026"}' --id compat-ci --local --port 8787 --json | tee /tmp/workflow-trigger.json
           for i in $(seq 1 20); do
-            curl -fsS "http://127.0.0.1:8787/probe/workflow?id=$ID" | tee /tmp/workflow-status.json
-            STATUS=$(node -p "require('/tmp/workflow-status.json').status")
+            npx wrangler workflows instances describe llmwiki-compat-workflow compat-ci --local --port 8787 --json | tee /tmp/workflow-status.json
+            STATUS=$(node -e "const x=require('/tmp/workflow-status.json'); console.log(x.status ?? x.instance?.status ?? '')")
             if [ "$STATUS" = "complete" ]; then exit 0; fi
             if [ "$STATUS" = "errored" ] || [ "$STATUS" = "terminated" ]; then exit 1; fi
             sleep 1
