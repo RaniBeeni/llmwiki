@@ -104,7 +104,7 @@ function retrievalAnswer(results: any[]): string {
     return `### ${r.page_id} · ${r.title}\n${r.body_md}\n\n근거: ${refs || "연결 근거 없음"}`;
   });
   return [
-    "현재 Cloudflare P0는 **근거조회(retrieval-only) 모드**입니다. 아래 내용은 Shadow Wiki에 저장된 페이지와 Source lineage를 그대로 반환한 것이며 공식 확정 답변이 아닙니다.",
+    "현재 Cloudflare P0는 근거조회(retrieval-only) 모드입니다. 아래 내용은 Shadow Wiki에 저장된 페이지와 Source lineage를 그대로 반환한 것이며 공식 확정 답변이 아닙니다.",
     ...blocks
   ].join("\n\n");
 }
@@ -127,7 +127,7 @@ async function logQuery(env: any, query: string, results: any[], answer: string)
   }
 }
 
-async function status(env: any): Promise<Response> {
+async function statusSnapshot(env: any) {
   try {
     const sql = db(env);
     const rows = await sql`
@@ -136,11 +136,16 @@ async function status(env: any): Promise<Response> {
         (SELECT count(*)::int FROM shadow_wiki.wiki_pages WHERE status <> 'SUPERSEDED') AS pages,
         (SELECT count(*)::int FROM shadow_wiki.contradictions WHERE status='open') AS open_contradictions
     `;
-    return json({ ok: true, layer: "SHADOW", runtime: "cloudflare-workers", ...rows[0] });
+    return { ok: true, layer: "SHADOW", runtime: "cloudflare-workers", ...rows[0] } as any;
   } catch (error) {
     console.error("status failed", error);
-    return json({ ok: false, layer: "SHADOW", runtime: "cloudflare-workers", error: "DATABASE_NOT_CONNECTED" }, 503);
+    return { ok: false, layer: "SHADOW", runtime: "cloudflare-workers", error: "DATABASE_NOT_CONNECTED" } as any;
   }
+}
+
+async function status(env: any): Promise<Response> {
+  const data = await statusSnapshot(env);
+  return json(data, data.ok ? 200 : 503);
 }
 
 async function search(request: Request, env: any): Promise<Response> {
@@ -212,30 +217,78 @@ export class IngestWorkflow extends WorkflowEntrypoint<any, { sourceId: string }
   }
 }
 
-const HTML = `<!doctype html>
+function escapeHtml(value: unknown) {
+  return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#039;"
+  }[c] as string));
+}
+
+function renderEvidence(results: any[]) {
+  const evidence = compactEvidence(results);
+  if (!evidence.length) return '<span class="muted">연결 근거 없음</span>';
+  return evidence.map((e: any) => `
+    <div class="ev">
+      <b>${escapeHtml(e.page_id)}</b><br>
+      ${escapeHtml(e.source_id)}<br>
+      ${escapeHtml(e.source_locator || "")}<br>
+      <code>${escapeHtml(e.content_sha256 || "")}</code>
+    </div>`).join("");
+}
+
+async function renderHome(url: URL, env: any): Promise<Response> {
+  const query = String(url.searchParams.get("q") || "").trim();
+  const snapshot = await statusSnapshot(env);
+
+  let resultHtml = '<p class="muted">Shadow Neon의 근거를 조회합니다.</p>';
+  if (query) {
+    try {
+      const results = await retrieveWiki(env, query);
+      const answer = retrievalAnswer(results);
+      await logQuery(env, query, results, answer);
+      resultHtml = `
+        <div class="badge">retrieval-only-p0</div>
+        <div class="answer">${escapeHtml(answer).replace(/\n/g, "<br>")}</div>
+        <h3>근거</h3>
+        <div class="evidence">${renderEvidence(results)}</div>`;
+    } catch (error) {
+      console.error("ui query failed", error);
+      resultHtml = '<p class="error">근거 조회에 실패했습니다. DATABASE_URL 및 Worker 로그를 확인해 주세요.</p>';
+    }
+  }
+
+  const statusText = snapshot.ok
+    ? `${snapshot.pages} pages · ${snapshot.sources} sources · ${snapshot.open_contradictions} conflicts`
+    : "DB 연결 대기";
+
+  const html = `<!doctype html>
 <html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>ESG AI Knowledge · Shadow P0</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#f6f7f4;color:#1e261f;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:980px;margin:auto;padding:50px 22px 80px}.hero{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:22px}.eyebrow{font-size:12px;letter-spacing:.12em;font-weight:800;color:#5b685d}h1{font-size:44px;letter-spacing:-.04em;margin:8px 0 12px}p{line-height:1.65}.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#e6efe4;color:#31543a;font-size:11px;font-weight:800}.card{background:white;border:1px solid #dde3da;border-radius:18px;padding:22px;margin:14px 0;box-shadow:0 8px 26px rgba(20,35,20,.04)}.row{display:flex;gap:10px}input{flex:1;padding:14px 15px;border:1px solid #cdd6ca;border-radius:12px;font-size:16px}button{border:0;border-radius:12px;background:#24402b;color:#fff;padding:0 18px;font-weight:700;cursor:pointer}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.chips button{background:#eef2ec;color:#334336;padding:8px 11px;font-size:12px}.answer{white-space:pre-wrap;line-height:1.7}.evidence{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}.ev{border:1px solid #e1e6df;border-radius:12px;padding:13px;font-size:12px;overflow-wrap:anywhere}.muted{color:#6b746c;font-size:13px}.error{color:#8b2c2c}@media(max-width:680px){.hero,.row{flex-direction:column;align-items:stretch}h1{font-size:36px}button{padding:13px}}
+*{box-sizing:border-box}body{margin:0;background:#f6f7f4;color:#1e261f;font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:980px;margin:auto;padding:50px 22px 80px}.hero{display:flex;justify-content:space-between;gap:24px;align-items:flex-end;margin-bottom:22px}.eyebrow{font-size:12px;letter-spacing:.12em;font-weight:800;color:#5b685d}h1{font-size:44px;letter-spacing:-.04em;margin:8px 0 12px}p{line-height:1.65}.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#e6efe4;color:#31543a;font-size:11px;font-weight:800}.card{background:white;border:1px solid #dde3da;border-radius:18px;padding:22px;margin:14px 0;box-shadow:0 8px 26px rgba(20,35,20,.04)}.row{display:flex;gap:10px}input{flex:1;padding:14px 15px;border:1px solid #cdd6ca;border-radius:12px;font-size:16px}button,.chip{border:0;border-radius:12px;background:#24402b;color:#fff;padding:0 18px;font-weight:700;cursor:pointer;text-decoration:none;display:inline-flex;align-items:center;justify-content:center}.chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}.chip{background:#eef2ec;color:#334336;padding:8px 11px;font-size:12px}.answer{white-space:normal;line-height:1.7;margin-top:14px}.evidence{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}.ev{border:1px solid #e1e6df;border-radius:12px;padding:13px;font-size:12px;overflow-wrap:anywhere}.muted{color:#6b746c;font-size:13px}.error{color:#8b2c2c}@media(max-width:680px){.hero,.row{flex-direction:column;align-items:stretch}h1{font-size:36px}button{padding:13px}}
 </style></head><body><main>
-<header class="hero"><div><span class="eyebrow">CORP-ESG-001 · CLOUDFLARE P0</span><h1>ESG AI Knowledge</h1><p>Google Drive·공식 Requirement DB·Notion을 대체하지 않는 <b>SHADOW</b> 지식층입니다.</p></div><div><span class="badge">SHADOW</span><p id="status" class="muted">상태 확인 중…</p></div></header>
-<section class="card"><b>질문 / ID 검색</b><div class="row" style="margin-top:12px"><input id="q" value="GOV-1.2" placeholder="GOV-1.2 또는 KSSB 거버넌스 질문"><button id="ask">근거 찾기</button></div><div class="chips"><button data-q="GOV-1.1">GOV-1.1</button><button data-q="GOV-1.2">GOV-1.2</button><button data-q="경영진 역할">경영진 역할</button></div></section>
-<section id="result" class="card"><p class="muted">Cloudflare 원격 배포 후 이 화면에서 Shadow Neon의 근거를 조회합니다.</p></section>
+<header class="hero"><div><span class="eyebrow">CORP-ESG-001 · CLOUDFLARE P0</span><h1>ESG AI Knowledge</h1><p>Google Drive·공식 Requirement DB·Notion을 대체하지 않는 <b>SHADOW</b> 지식층입니다.</p></div><div><span class="badge">SHADOW</span><p class="muted">${escapeHtml(statusText)}</p></div></header>
+<section class="card"><b>질문 / ID 검색</b><form class="row" style="margin-top:12px" method="get" action="/"><input name="q" value="${escapeHtml(query || "GOV-1.2")}" placeholder="GOV-1.2 또는 KSSB 거버넌스 질문"><button type="submit">근거 찾기</button></form><div class="chips"><a class="chip" href="/?q=GOV-1.1">GOV-1.1</a><a class="chip" href="/?q=GOV-1.2">GOV-1.2</a><a class="chip" href="/?q=${encodeURIComponent("경영진 역할")}">경영진 역할</a></div></section>
+<section class="card">${resultHtml}</section>
 <footer class="muted">P0는 retrieval-only입니다. LLM 생성은 Cloudflare 원격/Access/Workflow Gate 통과 후 별도 Provider Adapter로 연결합니다.</footer>
-</main><script>
-const q=document.getElementById('q'),result=document.getElementById('result'),statusEl=document.getElementById('status');
-function escapeHtml(s){return String(s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]})}
-async function status(){try{const r=await fetch('/api/status');const d=await r.json();statusEl.textContent=d.ok?(d.pages+' pages · '+d.sources+' sources · '+d.open_contradictions+' conflicts'):'DB 연결 대기';}catch(e){statusEl.textContent='상태 확인 실패'}}
-async function ask(text){text=text||q.value;result.innerHTML='<p class="muted">근거 조회 중…</p>';try{const r=await fetch('/api/ask',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({question:text})});const d=await r.json();if(!r.ok||!d.ok)throw new Error(d.error||'질의 실패');const ev=(d.evidence||[]).map(function(e){return '<div class="ev"><b>'+escapeHtml(e.page_id)+'</b><br>'+escapeHtml(e.source_id)+'<br>'+escapeHtml(e.source_locator||'')+'<br><code>'+escapeHtml(e.content_sha256||'')+'</code></div>'}).join('');result.innerHTML='<div class="badge">'+escapeHtml(d.mode)+'</div><div class="answer"><p>'+escapeHtml(d.answer).replace(/\n/g,'<br>')+'</p></div><h3>근거</h3><div class="evidence">'+(ev||'<span class="muted">근거 없음</span>')+'</div>';}catch(e){result.innerHTML='<p class="error">'+escapeHtml(e.message)+'</p>'}}
-document.getElementById('ask').onclick=function(){ask()};q.addEventListener('keydown',function(e){if(e.key==='Enter')ask()});document.querySelectorAll('[data-q]').forEach(function(b){b.onclick=function(){q.value=b.dataset.q;ask(b.dataset.q)}});status();
-</script></body></html>`;
+</main></body></html>`;
+
+  return new Response(html, {
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-esg-knowledge-layer": "SHADOW"
+    }
+  });
+}
 
 export default {
   async fetch(request: Request, env: any): Promise<Response> {
     const url = new URL(request.url);
-    if (url.pathname === "/" && request.method === "GET") {
-      return new Response(HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } });
-    }
+    if (url.pathname === "/" && request.method === "GET") return renderHome(url, env);
     if (url.pathname === "/health") {
       return json({ ok: true, layer: "SHADOW", runtime: "cloudflare-workers", databaseConfigured: Boolean(env.DATABASE_URL) });
     }
