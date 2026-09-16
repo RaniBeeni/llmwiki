@@ -36,3 +36,7 @@ The service reads from the physically separate Neon project `corp-esg-llmwiki-sh
 ## Secrets
 
 Never commit `DATABASE_URL`. Configure it as a Cloudflare Worker secret after Access protection is in place.
+
+## Cloudflare Git deployment
+
+Production builds are connected from Cloudflare Workers Builds to branch `cloudflare-p0-shadow` with root directory `/apps/esg-cloudflare/`. The deploy command is `npx wrangler deploy`; no separate build command is required for this P0.
