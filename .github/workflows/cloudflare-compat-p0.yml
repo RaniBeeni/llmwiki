@@ -1,0 +1,51 @@
+name: Cloudflare Compatibility P0
+
+on:
+  push:
+    branches: [cloudflare-compat-p0]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  workerd-compat:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: experiments/cloudflare-compat
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install probe dependencies
+        run: npm install --no-package-lock
+      - name: Bundle for Workers without deploying
+        run: npm run dry-run
+      - name: Start local workerd
+        run: |
+          npm run dev > /tmp/wrangler.log 2>&1 &
+          echo $! > /tmp/wrangler.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/health >/tmp/health.json; then
+              cat /tmp/health.json
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/wrangler.log
+          exit 1
+      - name: Runtime smoke - pdfjs-dist
+        run: |
+          curl -fsS http://127.0.0.1:8787/probe/pdf | tee /tmp/pdf.json
+          node -e "const x=require('/tmp/pdf.json'); if(!x.ok) process.exit(1);"
+      - name: Runtime smoke - mammoth bundle
+        run: |
+          curl -fsS http://127.0.0.1:8787/probe/mammoth | tee /tmp/mammoth.json
+          node -e "const x=require('/tmp/mammoth.json'); if(!x.ok) process.exit(1);"
+      - name: Stop local workerd
+        if: always()
+        run: |
+          kill $(cat /tmp/wrangler.pid) 2>/dev/null || true
+          tail -100 /tmp/wrangler.log || true
