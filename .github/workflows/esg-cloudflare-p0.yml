@@ -23,7 +23,7 @@ jobs:
         with:
           node-version: 22
       - name: Install
-        run: npm install --no-package-lock
+        run: npm install
       - name: Production dependency security gate
         run: npm audit --omit=dev --audit-level=high
       - name: Cloudflare bundle dry-run
