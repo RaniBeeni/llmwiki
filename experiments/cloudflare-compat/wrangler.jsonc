@@ -2,5 +2,18 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "llmwiki-cloudflare-compat-p0",
   "main": "src/index.ts",
-  "compatibility_date": "2026-09-16"
+  "compatibility_date": "2026-09-16",
+  "r2_buckets": [
+    {
+      "binding": "CACHE",
+      "bucket_name": "llmwiki-compat-local"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "llmwiki-compat-workflow",
+      "binding": "INGEST_WORKFLOW",
+      "class_name": "CompatWorkflow"
+    }
+  ]
 }

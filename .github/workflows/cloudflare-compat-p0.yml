@@ -40,6 +40,36 @@ jobs:
         run: |
           curl -fsS http://127.0.0.1:8787/probe/pdf | tee /tmp/pdf.json
           node -e "const x=require('/tmp/pdf.json'); if(!x.ok) process.exit(1);"
+      - name: Generate 165-page synthetic PDF
+        run: node scripts/make-fixture.mjs
+      - name: Runtime smoke - 165-page PDF
+        run: |
+          curl -fsS -X POST --data-binary @/tmp/kssb-synthetic-165.pdf http://127.0.0.1:8787/probe/pdf-post | tee /tmp/pdf165.json
+          node -e "const x=require('/tmp/pdf165.json'); if(!x.ok || x.pages!==165 || x.beforeBytes<=0 || x.afterBytes!==x.beforeBytes) process.exit(1);"
+      - name: Runtime smoke - ESG core logic
+        run: |
+          curl -fsS http://127.0.0.1:8787/probe/esg | tee /tmp/esg.json
+          node -e "const x=require('/tmp/esg.json'); if(!x.ok) process.exit(1);"
+      - name: Runtime smoke - local R2 binding
+        run: |
+          curl -fsS http://127.0.0.1:8787/probe/r2 | tee /tmp/r2.json
+          node -e "const x=require('/tmp/r2.json'); if(!x.ok) process.exit(1);"
+      - name: Runtime smoke - Neon driver bundle
+        run: |
+          curl -fsS http://127.0.0.1:8787/probe/neon-driver | tee /tmp/neon.json
+          node -e "const x=require('/tmp/neon.json'); if(!x.ok) process.exit(1);"
+      - name: Runtime smoke - local Workflow binding
+        run: |
+          curl -fsS http://127.0.0.1:8787/probe/workflow | tee /tmp/workflow-start.json
+          ID=$(node -p "require('/tmp/workflow-start.json').instanceId")
+          for i in $(seq 1 20); do
+            curl -fsS "http://127.0.0.1:8787/probe/workflow?id=$ID" | tee /tmp/workflow-status.json
+            STATUS=$(node -p "require('/tmp/workflow-status.json').status")
+            if [ "$STATUS" = "complete" ]; then exit 0; fi
+            if [ "$STATUS" = "errored" ] || [ "$STATUS" = "terminated" ]; then exit 1; fi
+            sleep 1
+          done
+          exit 1
       - name: Runtime smoke - mammoth bundle
         run: |
           curl -fsS http://127.0.0.1:8787/probe/mammoth | tee /tmp/mammoth.json
