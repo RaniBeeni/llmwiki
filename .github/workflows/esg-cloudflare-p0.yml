@@ -1,0 +1,66 @@
+name: ESG Cloudflare Shadow P0
+
+on:
+  push:
+    branches: [cloudflare-p0-shadow]
+    paths:
+      - "apps/esg-cloudflare/**"
+      - ".github/workflows/esg-cloudflare-p0.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/esg-cloudflare
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install
+        run: npm install --no-package-lock
+      - name: Production dependency security gate
+        run: npm audit --omit=dev --audit-level=high
+      - name: Cloudflare bundle dry-run
+        run: npm run dry-run
+      - name: Start local workerd
+        run: |
+          npm run dev > /tmp/esg-cloudflare.log 2>&1 &
+          echo $! > /tmp/esg-cloudflare.pid
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8787/health >/tmp/health.json; then
+              cat /tmp/health.json
+              node -e "const x=require('/tmp/health.json'); if(!x.ok || x.layer!=='SHADOW' || x.runtime!=='cloudflare-workers' || x.databaseConfigured!==false) process.exit(1)"
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/esg-cloudflare.log
+          exit 1
+      - name: Browser shell smoke
+        run: |
+          curl -fsS http://127.0.0.1:8787/ | tee /tmp/index.html
+          grep -q "ESG AI Knowledge" /tmp/index.html
+          grep -q "retrieval-only" /tmp/index.html
+      - name: Local Workflow + R2 smoke
+        run: |
+          curl -fsS -X POST -H 'content-type: application/json' -d '{"sourceId":"KSSB-S2-2026"}' http://127.0.0.1:8787/api/workflow/start | tee /tmp/start.json
+          ID=$(node -e "const x=require('/tmp/start.json'); if(!x.ok||!x.instanceId) process.exit(1); console.log(x.instanceId)")
+          for i in $(seq 1 20); do
+            curl -fsS "http://127.0.0.1:8787/api/workflow/status?id=$ID" | tee /tmp/status.json
+            STATUS=$(node -e "const x=require('/tmp/status.json'); console.log(x.workflow?.status ?? '')")
+            if [ "$STATUS" = "complete" ]; then exit 0; fi
+            if [ "$STATUS" = "errored" ] || [ "$STATUS" = "terminated" ]; then exit 1; fi
+            sleep 1
+          done
+          exit 1
+      - name: Stop local workerd
+        if: always()
+        run: |
+          kill $(cat /tmp/esg-cloudflare.pid) 2>/dev/null || true
+          tail -100 /tmp/esg-cloudflare.log || true
