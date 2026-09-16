@@ -1,0 +1,19 @@
+{
+  "name": "llmwiki-cloudflare-compat-p0",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dry-run": "wrangler deploy --dry-run --outdir=dist",
+    "dev": "wrangler dev --local --port 8787 --ip 127.0.0.1"
+  },
+  "dependencies": {
+    "mammoth": "1.12.0",
+    "pdfjs-dist": "4.10.38",
+    "@neondatabase/serverless": "1.1.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.132.0",
+    "pdf-lib": "1.17.1"
+  }
+}

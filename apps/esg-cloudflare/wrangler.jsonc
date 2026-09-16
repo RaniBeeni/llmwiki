@@ -1,0 +1,23 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "corp-esg-llmwiki-shadow-p0",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-09-16",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    "LAYER": "SHADOW"
+  },
+  "r2_buckets": [
+    {
+      "binding": "CACHE",
+      "bucket_name": "corp-esg-llmwiki-shadow-cache"
+    }
+  ],
+  "workflows": [
+    {
+      "name": "corp-esg-llmwiki-ingest-p0",
+      "binding": "INGEST_WORKFLOW",
+      "class_name": "IngestWorkflow"
+    }
+  ]
+}

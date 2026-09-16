@@ -1,0 +1,37 @@
+name: ESG Cloudflare lockfile bootstrap
+
+on:
+  push:
+    branches:
+      - cloudflare-p0-shadow
+    paths:
+      - .github/workflows/esg-cloudflare-lockfile.yml
+      - apps/esg-cloudflare/package.json
+
+permissions:
+  contents: write
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cloudflare-p0-shadow
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Generate lockfile
+        working-directory: apps/esg-cloudflare
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Commit lockfile when changed
+        run: |
+          if [ -z "$(git status --porcelain -- apps/esg-cloudflare/package-lock.json)" ]; then
+            echo "No lockfile change"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/esg-cloudflare/package-lock.json
+          git commit -m "chore: add Cloudflare app lockfile"
+          git push origin HEAD:cloudflare-p0-shadow

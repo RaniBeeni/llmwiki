@@ -6,6 +6,7 @@ import { appendEntry } from './log.js';
 import { slugify } from './utils.js';
 import { API_VERSION } from './constants.js';
 import { isNotFoundError, isPermissionError } from './errors.js';
+import { safeShadowWrite } from './esg-shadow.js';
 
 /**
  * Result of running the ingest command.
@@ -130,19 +131,21 @@ export async function ingestSource(
   const pagesUpdated: string[] = [];
 
   if (!dryRun) {
-    // Create summary page
-    await writePage(summaryFullPath, {
-      frontmatter: {
-        type: 'source',
-        title: sourceFilename,
-        source_path: relativeSourcePath,
-        ingested: today,
-        created: today,
-        tags: [],
-      },
-      body: `# ${sourceFilename}\n\n**Source:** ${relativeSourcePath}  \n**Type:** ${sourceExt || 'unknown'}  \n**Size:** ${sourceStat.size} bytes  \n**Ingested:** ${today}\n\n## Content Preview\n\n${excerpt}`,
-    });
-    pagesCreated.push(summaryRelPath);
+    // Create/update source summary through history-preserving Shadow write.
+    const summaryBody = `# ${sourceFilename}\n\n**Source:** ${relativeSourcePath}  \n**Type:** ${sourceExt || 'unknown'}  \n**Size:** ${sourceStat.size} bytes  \n**Ingested:** ${today}\n\n## Content Preview\n\n${excerpt}`;
+    await safeShadowWrite(wikiDir, summaryRelPath, {
+      type: 'source',
+      title: sourceFilename,
+      source_path: relativeSourcePath,
+      ingested: today,
+      created: today,
+      tags: [],
+      authority_scope: relativeSourcePath.startsWith('raw/approved-project/') ? 'project-ssot-mirror' : 'external-standard',
+      access_classification: relativeSourcePath.startsWith('raw/approved-project/') ? 'APPROVED-PROJECT' : 'PUBLIC',
+      source_refs: [relativeSourcePath],
+    }, summaryBody, { updateKind: summaryExists ? 'extend' : 'new', replaceBody: summaryExists });
+    if (summaryExists) pagesUpdated.push(summaryRelPath);
+    else pagesCreated.push(summaryRelPath);
 
     // Update index (remove existing entry first when force-overwriting to prevent duplicates)
     if (force && summaryExists) {
